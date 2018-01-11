@@ -4,28 +4,24 @@ lock "3.8.1"
 set :application, 'blog'
 set :repo_url, 'git@github.com:Liber17321/blog.git'  # 这里填的是每个人自己的repo地址
 
+set :puma_bind, "unix://#{shared_path}/tmp/sockets/#{fetch(:application)}-puma.sock"
+set :puma_state, "#{shared_path}/tmp/pids/puma.state"
+set :puma_pid, "#{shared_path}/tmp/pids/puma.pid"
 
-# Default branch is :master
+set :puma_access_log, "#{release_path}/log/puma.error.log"
+set :puma_error_log, "#{release_path}/log/puma.access.log"
+# set :ssh_options, { forward_agent: true, user: fetch(:user), keys: %w(~/.ssh/id_rsa.pub) }
 
-# ask :branch, `git rev-parse --abbrev-ref HEAD`.chomp
+set :puma_preload_app, true
+set :puma_worker_timeout, nil
+set :puma_init_active_record, true # Change to false when not using ActiveRecord
 
-
-
-# Default value for :format is :airbrussh.
-
-# set :format, :airbrussh
-
-
-# You can configure the Airbrussh format using :format_options.
-
-# These are the defaults.
-
-# set :format_options, command_output: true, log_file: 'log/capistrano.log', color: :auto, truncate: :auto
-
-
-# Default value for :pty is false
-
-# set :pty, true
+## Defaults:
+# set :scm, :git
+# set :branch, :master
+# set :format, :pretty
+# set :log_level, :debug
+set :keep_releases, 5
 
 
 # Default value for :linked_files is []
@@ -41,13 +37,24 @@ set :linked_files, fetch(:linked_files, []).push('config/database.yml', 'config/
 
 set :linked_dirs, fetch(:linked_dirs, []).push('log', 'tmp/pids', 'tmp/cache', 'tmp/sockets', 'vendor/bundle')
 
+namespace :puma do
+  desc 'Create Directories for Puma Pids and Socket'
+  task :make_dirs do
+    on roles(:app) do
+      execute "mkdir #{shared_path}/tmp/sockets -p"
+      execute "mkdir #{shared_path}/tmp/pids -p"
+    end
+  end
+end
 
 namespace :deploy do
-  desc 'create_db'
-  task :create_db do
+  desc "Make sure local git is in sync with remote."
+  task :check_revision do
     on roles(:app) do
-      within release_path do
-        execute :bundle, :exec, :"rails db:create RAILS_ENV=#{fetch(:stage)}"
+      unless `git rev-parse HEAD` == `git rev-parse origin/master`
+        puts "WARNING: HEAD is not the same as origin/master"
+        puts "Run `git push` to sync changes."
+        exit
       end
     end
   end
@@ -59,49 +66,23 @@ namespace :deploy do
     end
   end
 
-  desc 'Seeds database'
-  task :seed do
+  desc 'Initial Deploy'
+  task :initial do
     on roles(:app) do
-      within release_path do
-        execute :bundle, :exec, :"rails db:seed RAILS_ENV=#{fetch(:stage)}"
-      end
-    end
-  end
-
-  before 'deploy:migrate', 'deploy:create_db'
-  after :finished, 'deploy:seed'
-  after :finished, 'app:restart'
-end
-
-namespace :app do
-  desc 'Start application'
-  task :start do
-    on roles(:app) do
-      within "#{fetch(:deploy_to)}/current/" do
-        execute :bundle, :exec, :"puma -C config/puma.rb -e #{fetch(:stage)}"
-      end
-    end
-  end
-
-  desc 'Stop application'
-  task :stop do
-    on roles(:app) do
-      within "#{fetch(:deploy_to)}/current/" do
-        execute :bundle, :exec, :'pumactl -F config/puma.rb stop'
-      end
+      before 'deploy:restart', 'puma:start'
+      invoke 'deploy'
     end
   end
 
   desc 'Restart application'
   task :restart do
-    on roles(:app) do
-      within "#{fetch(:deploy_to)}/current/" do
-        if test("[ -f #{deploy_to}/current/tmp/pids/puma.pid ]")
-          execute :bundle, :exec, :'pumactl -F config/puma.rb stop'
-        end
-
-        execute :bundle, :exec, :"puma -C config/puma.rb -e #{fetch(:stage)}"
-      end
+    on roles(:app), in: :sequence, wait: 5 do
+      invoke 'puma:restart'
     end
   end
+
+  before :starting, :check_revision
+  after :finishing, :compile_assets
+  after :finishing, :cleanup
+  # after :finishing, :restart
 end
